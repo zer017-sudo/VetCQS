@@ -1,10 +1,12 @@
 package mx.buap.veterinaria.caja;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.text.NumberFormat;
 import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
@@ -17,37 +19,54 @@ import javafx.application.Platform;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.geometry.Insets;
+import javafx.geometry.Pos;
+import javafx.scene.Node;
 import javafx.scene.Scene;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
+import javafx.scene.control.ButtonType;
 import javafx.scene.control.Label;
-import javafx.scene.control.TableColumn;
+import javafx.scene.control.SelectionMode;
 import javafx.scene.control.TableCell;
+import javafx.scene.control.TableColumn;
+import javafx.scene.control.TablePosition;
 import javafx.scene.control.TableView;
 import javafx.scene.control.TextField;
+import javafx.scene.control.Tooltip;
 import javafx.scene.control.cell.PropertyValueFactory;
 import javafx.scene.control.cell.TextFieldTableCell;
-import javafx.scene.control.SelectionMode;
 import javafx.scene.input.Clipboard;
 import javafx.scene.input.ClipboardContent;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyEvent;
 import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
 import javafx.stage.Window;
+import javafx.util.converter.BigDecimalStringConverter;
 
 public class CajaApp extends Application {
 
     static final String SERVIDOR = System.getProperty("servidor", "http://localhost:8080");
+    private static final String ESTILO = CajaApp.class.getResource("estilo.css").toExternalForm();
+    private static final NumberFormat MONEDA = NumberFormat.getNumberInstance(Locale.forLanguageTag("es-MX"));
+
+    static {
+        MONEDA.setMinimumFractionDigits(2);
+        MONEDA.setMaximumFractionDigits(2);
+    }
+
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
     private final ObjectMapper json = new ObjectMapper();
     private final ObservableList<Renglon> carrito = FXCollections.observableArrayList();
-    private final Label estadoServidor = new Label("Servidor: verificando...");
+    private final Label estadoServidor = new Label("Verificando servidor…");
     private final Label total = new Label("$0.00");
-    private final Label resumenCarrito = new Label("0 productos");
+    private final Label resumenCarrito = new Label("Sin productos");
+    private final Label contadorRenglones = new Label("0");
     private final TableView<Renglon> tabla = new TableView<>(carrito);
     private Stage ventanaPrincipal;
     private boolean servidorDisponible;
@@ -62,25 +81,34 @@ public class CajaApp extends Application {
     @Override
     public void start(Stage ventana) {
         ventanaPrincipal = ventana;
-        Label marca = new Label("SISTEMA VETERINARIA");
-        marca.setStyle("-fx-text-fill: white; -fx-font-size: 15px; -fx-font-weight: bold;");
-        Label encabezado = new Label("Punto de venta  /  Caja");
-        encabezado.setStyle("-fx-text-fill: #D7E5F5; -fx-font-size: 13px;");
-        VBox identidad = new VBox(2, marca, encabezado);
-        estadoServidor.setStyle("-fx-background-color: #315B79; -fx-background-radius: 14px; "
-                + "-fx-padding: 7px 12px; -fx-text-fill: white; -fx-font-size: 12px;");
-        HBox barraSuperior = new HBox(20, identidad, espacio(), estadoServidor);
-        barraSuperior.setPadding(new Insets(14, 20, 14, 20));
-        barraSuperior.setStyle("-fx-background-color: #17324D;");
 
+        // ---------- Barra superior ----------
+        Label logo = new Label("VET");
+        logo.getStyleClass().add("logo");
+        Label marca = new Label("Sistema Veterinaria");
+        marca.getStyleClass().add("marca");
+        Label subtitulo = new Label("Punto de venta  ·  Caja");
+        subtitulo.getStyleClass().add("subtitulo");
+        VBox identidad = new VBox(1, marca, subtitulo);
+        identidad.setAlignment(Pos.CENTER_LEFT);
+        estadoServidor.getStyleClass().add("estado");
+        HBox barraSuperior = new HBox(logo, identidad, espacio(), estadoServidor);
+        barraSuperior.getStyleClass().add("barra-superior");
+
+        // ---------- Captura de productos ----------
         TextField captura = new TextField();
-        captura.setPromptText("Escanee o escriba código de barras o nombre");
-        captura.setStyle("-fx-font-size: 14px; -fx-padding: 11px 14px; "
-                + "-fx-background-color: white; -fx-border-color: #B8C7D6; "
-                + "-fx-border-radius: 6px; -fx-background-radius: 6px;");
+        captura.setPromptText("Escanee el código de barras o escriba el nombre del producto");
+        captura.getStyleClass().add("campo-busqueda");
         captura.setOnAction(e -> buscar(captura));
+        HBox.setHgrow(captura, Priority.ALWAYS);
+        Button agregar = new Button("Agregar");
+        agregar.getStyleClass().add("boton-marca");
+        agregar.setOnAction(e -> buscar(captura));
+        HBox filaCaptura = new HBox(10, captura, agregar);
+        filaCaptura.setAlignment(Pos.CENTER);
 
-        TableColumn<Renglon, BigDecimal> cantidad = new TableColumn<>("Cant.");
+        // ---------- Tabla de la venta ----------
+        TableColumn<Renglon, BigDecimal> cantidad = new TableColumn<>("CANT.");
         cantidad.setCellValueFactory(new PropertyValueFactory<>("cantidad"));
         cantidad.setEditable(true);
         cantidad.setOnEditCommit(e -> {
@@ -88,63 +116,101 @@ public class CajaApp extends Application {
             if (nuevaCantidad != null && nuevaCantidad.compareTo(BigDecimal.ZERO) > 0) {
                 e.getRowValue().setCantidad(nuevaCantidad);
                 actualizarTotal();
-                tabla.refresh();
             }
-
+            tabla.refresh();
         });
-        cantidad.setCellFactory(TextFieldTableCell.forTableColumn(new javafx.util.converter.BigDecimalStringConverter()));
-        TableColumn<Renglon, String> nombre = new TableColumn<>("Producto");
+        cantidad.setCellFactory(TextFieldTableCell.forTableColumn(new BigDecimalStringConverter() {
+            @Override
+            public String toString(BigDecimal valor) {
+                return valor == null ? "" : valor.stripTrailingZeros().toPlainString();
+            }
+        }));
+        cantidad.getStyleClass().add("col-centro");
+        cantidad.setPrefWidth(80);
+        cantidad.setMaxWidth(110);
+        TableColumn<Renglon, String> nombre = new TableColumn<>("PRODUCTO");
         nombre.setCellValueFactory(new PropertyValueFactory<>("nombre"));
-        TableColumn<Renglon, BigDecimal> precio = new TableColumn<>("Precio");
+        nombre.setPrefWidth(360);
+        TableColumn<Renglon, BigDecimal> precio = new TableColumn<>("PRECIO UNIT.");
         precio.setCellValueFactory(new PropertyValueFactory<>("precio"));
         precio.setCellFactory(columna -> celdaMonetaria());
-        TableColumn<Renglon, BigDecimal> importe = new TableColumn<>("Importe");
+        precio.getStyleClass().add("col-dinero");
+        precio.setPrefWidth(120);
+        TableColumn<Renglon, BigDecimal> importe = new TableColumn<>("IMPORTE");
         importe.setCellValueFactory(new PropertyValueFactory<>("importe"));
         importe.setCellFactory(columna -> celdaMonetaria());
+        importe.getStyleClass().add("col-importe");
+        importe.setPrefWidth(130);
         tabla.getColumns().addAll(cantidad, nombre, precio, importe);
         tabla.setEditable(true);
         tabla.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
-        tabla.setPlaceholder(new Label("Aun no hay productos en la venta"));
-        tabla.setStyle("-fx-background-color: white; -fx-border-color: #D7E0E8; "
-                + "-fx-border-radius: 6px; -fx-background-radius: 6px;");
+        tabla.setPlaceholder(placeholder("La venta está vacía",
+                "Escanee un producto o búsquelo por nombre para comenzar"));
+        tabla.setTooltip(new Tooltip("Doble clic en la cantidad para modificarla · SUPR elimina el renglón"));
 
-        total.setStyle("-fx-font-size: 28px; -fx-font-weight: bold;");
-        Button cobrar = new Button("Cobrar");
-        cobrar.setMaxWidth(Double.MAX_VALUE);
-        cobrar.setStyle("-fx-background-color: #21865B; -fx-text-fill: white; "
-                + "-fx-font-size: 14px; -fx-font-weight: bold; -fx-padding: 11px;");
-        cobrar.setOnAction(e -> cobrar());
-        Button inventario = new Button("Revisar inventario");
-        inventario.setMaxWidth(Double.MAX_VALUE);
-        inventario.setStyle("-fx-background-color: #E8F0F7; -fx-text-fill: #17324D; "
-                + "-fx-font-weight: bold; -fx-padding: 9px;");
-        inventario.setOnAction(e -> revisarInventario());
-        Label tituloTotal = new Label("TOTAL A COBRAR");
-        tituloTotal.setStyle("-fx-text-fill: #6B7C8F; -fx-font-size: 11px; -fx-font-weight: bold;");
-        resumenCarrito.setStyle("-fx-text-fill: #7A8A99; -fx-font-size: 12px;");
-        VBox panelTotal = new VBox(12, tituloTotal, total, resumenCarrito, cobrar, inventario);
-        panelTotal.setPadding(new Insets(22));
-        panelTotal.setMinWidth(240);
-        panelTotal.setStyle("-fx-background-color: white; -fx-border-color: #D7E0E8; "
-                + "-fx-border-radius: 8px; -fx-background-radius: 8px;");
-
-        VBox centro = new VBox(8, captura, tabla);
+        Label tituloVenta = new Label("Venta actual");
+        tituloVenta.getStyleClass().add("titulo-tarjeta");
+        contadorRenglones.getStyleClass().add("contador");
+        HBox encabezadoVenta = new HBox(8, tituloVenta, contadorRenglones);
+        encabezadoVenta.setAlignment(Pos.CENTER_LEFT);
+        VBox tarjetaVenta = new VBox(12, filaCaptura, encabezadoVenta, tabla);
+        tarjetaVenta.getStyleClass().add("tarjeta");
         VBox.setVgrow(tabla, Priority.ALWAYS);
-        centro.setPadding(new Insets(18, 12, 12, 18));
-        Label atajos = new Label("ENTER  Buscar y agregar     SUPR  Eliminar producto seleccionado");
-        atajos.setStyle("-fx-text-fill: #718294; -fx-font-size: 12px;");
-        atajos.setPadding(new Insets(8, 18, 12, 18));
 
-        BorderPane raiz = new BorderPane(centro, barraSuperior, panelTotal, atajos, null);
-        raiz.setStyle("-fx-background-color: #F3F6F9;");
-        Scene escena = new Scene(raiz, 1024, 640);
+        // ---------- Panel del total ----------
+        Label tituloTotal = new Label("TOTAL A COBRAR");
+        tituloTotal.getStyleClass().add("etiqueta-seccion");
+        total.getStyleClass().add("total-grande");
+        resumenCarrito.getStyleClass().add("texto-suave");
+        Button cobrar = new Button("Cobrar   F12");
+        cobrar.getStyleClass().add("boton-primario");
+        cobrar.setMaxWidth(Double.MAX_VALUE);
+        cobrar.setOnAction(e -> cobrar());
+        Button inventario = new Button("Revisar inventario   F4");
+        inventario.getStyleClass().add("boton-secundario");
+        inventario.setMaxWidth(Double.MAX_VALUE);
+        inventario.setOnAction(e -> revisarInventario());
+        Region empuje = new Region();
+        VBox.setVgrow(empuje, Priority.ALWAYS);
+        VBox panelTotal = new VBox(10, tituloTotal, total, resumenCarrito, separador(),
+                empuje, cobrar, inventario);
+        panelTotal.getStyleClass().add("tarjeta");
+        panelTotal.setPrefWidth(280);
+        panelTotal.setMinWidth(260);
+
+        HBox cuerpo = new HBox(16, tarjetaVenta, panelTotal);
+        HBox.setHgrow(tarjetaVenta, Priority.ALWAYS);
+        cuerpo.setPadding(new Insets(18, 22, 6, 22));
+
+        // ---------- Atajos ----------
+        HBox atajos = new HBox(
+                tecla("ENTER"), descripcionTecla("Buscar y agregar"),
+                tecla("SUPR"), descripcionTecla("Eliminar renglón"),
+                tecla("F4"), descripcionTecla("Inventario"),
+                tecla("F12"), descripcionTecla("Cobrar"));
+        atajos.getStyleClass().add("barra-atajos");
+
+        BorderPane raiz = new BorderPane(cuerpo, barraSuperior, null, atajos, null);
+        Scene escena = new Scene(raiz, 1100, 680);
+        escena.getStylesheets().add(ESTILO);
+        escena.addEventFilter(KeyEvent.KEY_PRESSED, e -> {
+            if (e.getCode() == KeyCode.F12) {
+                cobrar();
+                e.consume();
+            } else if (e.getCode() == KeyCode.F4) {
+                revisarInventario();
+                e.consume();
+            }
+        });
         escena.setOnKeyPressed(e -> {
-            if (e.getCode() == javafx.scene.input.KeyCode.DELETE) {
+            if (e.getCode() == KeyCode.DELETE) {
                 eliminarSeleccionado();
             }
         });
 
         ventana.setTitle("Sistema Veterinaria · Caja");
+        ventana.setMinWidth(900);
+        ventana.setMinHeight(560);
         ventana.setScene(escena);
         ventana.show();
         captura.requestFocus();
@@ -168,12 +234,16 @@ public class CajaApp extends Application {
                     agregar(producto);
                     captura.clear();
                 } else {
-                    mostrarError("No se encontró un producto activo");
+                    mostrarError("Producto no encontrado", "No se encontró un producto activo con «" + texto + "».");
                 }
             } catch (Exception ex) {
                 mostrarError(ex.getMessage());
             }
-        }));
+        })).exceptionally(ex -> {
+            Platform.runLater(() -> mostrarError("Sin conexión",
+                    "No se pudo consultar el servidor. Verifique la red e intente de nuevo."));
+            return null;
+        });
     }
 
     private void buscarProductoDePrueba(String texto, TextField captura) {
@@ -183,7 +253,7 @@ public class CajaApp extends Application {
                 .findFirst()
                 .orElse(null);
         if (producto == null) {
-            mostrarError("No se encontró un producto en los datos temporales");
+            mostrarError("Producto no encontrado", "No se encontró «" + texto + "» en los datos de prueba.");
             return;
         }
         agregar(productoJson(producto));
@@ -202,121 +272,174 @@ public class CajaApp extends Application {
     private void agregar(JsonNode producto) {
         int id = producto.get("id").asInt();
         BigDecimal precio = producto.get("precio").decimalValue();
-        carrito.stream().filter(r -> r.id == id).findFirst().ifPresentOrElse(
-                r -> r.cantidad = r.cantidad.add(BigDecimal.ONE),
-                () -> carrito.add(new Renglon(id, producto.get("nombre").asText(), precio)));
+        Renglon renglon = carrito.stream().filter(r -> r.id == id).findFirst().orElse(null);
+        if (renglon != null) {
+            renglon.cantidad = renglon.cantidad.add(BigDecimal.ONE);
+        } else {
+            renglon = new Renglon(id, producto.get("nombre").asText(), precio);
+            carrito.add(renglon);
+        }
         actualizarTotal();
         tabla.refresh();
+        tabla.getSelectionModel().select(renglon);
+        tabla.scrollTo(renglon);
     }
 
     private void cobrar() {
         if (carrito.isEmpty()) {
-            mostrarError("Agregue al menos un producto");
+            mostrarError("Venta vacía", "Agregue al menos un producto antes de cobrar.");
             return;
         }
         BigDecimal importe = total();
-        TextField recibido = new TextField(formatearDinero(importe));
-        recibido.setPromptText("Efectivo recibido");
-        VBox productos = new VBox(6);
-        productos.setStyle("-fx-background-color: white; -fx-border-color: #D7E0E8; "
-                + "-fx-border-radius: 6px; -fx-background-radius: 6px; -fx-padding: 12px;");
+
+        // Lista de productos con importes alineados a la derecha
+        GridPane productos = new GridPane();
+        productos.setHgap(16);
+        productos.setVgap(6);
+        productos.getStyleClass().add("tarjeta");
+        int fila = 0;
         for (Renglon renglon : carrito) {
-            Label producto = new Label(
-                    renglon.getCantidad().stripTrailingZeros().toPlainString() + " × "
-                            + renglon.getNombre() + "    $" + formatearDinero(renglon.getImporte()));
-            producto.setStyle("-fx-text-fill: #425466; -fx-font-size: 13px;");
-            productos.getChildren().add(producto);
+            Label descripcion = new Label(renglon.getCantidad().stripTrailingZeros().toPlainString()
+                    + " × " + renglon.getNombre());
+            descripcion.getStyleClass().add("renglon-resumen");
+            Label monto = new Label(dinero(renglon.getImporte()));
+            monto.getStyleClass().add("renglon-resumen");
+            GridPane.setHgrow(descripcion, Priority.ALWAYS);
+            GridPane.setHalignment(monto, javafx.geometry.HPos.RIGHT);
+            productos.addRow(fila++, descripcion, monto);
         }
-        Label totalDialogo = new Label("Total a pagar: $" + formatearDinero(importe));
-        totalDialogo.setStyle("-fx-font-size: 16px; -fx-font-weight: bold; -fx-text-fill: #17324D;");
-        Label productosTitulo = new Label("PRODUCTOS DE LA VENTA");
-        productosTitulo.setStyle("-fx-text-fill: #6B7C8F; -fx-font-size: 11px; -fx-font-weight: bold;");
-        Label franja = new Label("RESUMEN DE LA VENTA");
-        franja.setMaxWidth(Double.MAX_VALUE);
-        franja.setStyle("-fx-background-color: #17324D; -fx-text-fill: white; "
-                + "-fx-font-size: 13px; -fx-font-weight: bold; -fx-padding: 12px 14px;");
+
+        Label tituloTotal = new Label("TOTAL A PAGAR");
+        tituloTotal.getStyleClass().add("etiqueta-seccion");
+        Label totalDialogo = new Label(dinero(importe));
+        totalDialogo.getStyleClass().add("total-grande");
+
         Label recibidoLabel = new Label("EFECTIVO RECIBIDO");
-        recibidoLabel.setStyle("-fx-text-fill: #6B7C8F; -fx-font-size: 11px; -fx-font-weight: bold;");
-        recibido.setStyle("-fx-font-size: 14px; -fx-padding: 9px; -fx-background-color: white; "
-                + "-fx-border-color: #B8C7D6; -fx-border-radius: 6px; -fx-background-radius: 6px;");
-        VBox contenido = new VBox(12, franja, productosTitulo, productos,
-                totalDialogo, recibidoLabel, recibido);
-        contenido.setPadding(new Insets(16));
-        contenido.setStyle("-fx-background-color: #F3F6F9;");
-        Alert dialogo = new Alert(Alert.AlertType.CONFIRMATION);
+        recibidoLabel.getStyleClass().add("etiqueta-seccion");
+        TextField recibido = new TextField(importe.setScale(2, RoundingMode.HALF_UP).toPlainString());
+        recibido.setPromptText("0.00");
+        recibido.getStyleClass().add("campo-grande");
+        Label cambioLabel = new Label("CAMBIO");
+        cambioLabel.getStyleClass().add("etiqueta-seccion");
+        Label cambio = new Label(dinero(BigDecimal.ZERO));
+        cambio.getStyleClass().add("cambio-grande");
+        recibido.textProperty().addListener((obs, anterior, nuevo) -> {
+            BigDecimal efectivo = leerDinero(nuevo);
+            if (efectivo == null) {
+                cambio.setText("—");
+            } else if (efectivo.compareTo(importe) < 0) {
+                cambio.setText("Faltan " + dinero(importe.subtract(efectivo)));
+            } else {
+                cambio.setText(dinero(efectivo.subtract(importe)));
+            }
+        });
+
+        VBox columnaRecibido = new VBox(6, recibidoLabel, recibido);
+        VBox columnaCambio = new VBox(6, cambioLabel, cambio);
+        HBox.setHgrow(columnaRecibido, Priority.ALWAYS);
+        HBox.setHgrow(columnaCambio, Priority.ALWAYS);
+        HBox pago = new HBox(20, columnaRecibido, columnaCambio);
+
+        VBox cuerpo = new VBox(12, etiquetaSeccion("PRODUCTOS DE LA VENTA"), productos,
+                tituloTotal, totalDialogo, separador(), pago);
+        cuerpo.setPadding(new Insets(16, 18, 12, 18));
+        VBox contenido = new VBox(franja("Confirmar cobro", null), cuerpo);
+
+        Alert dialogo = new Alert(Alert.AlertType.CONFIRMATION, "", ButtonType.OK, ButtonType.CANCEL);
         dialogo.setTitle("Confirmar cobro");
-        dialogo.setHeaderText(null);
-        dialogo.setGraphic(null);
         prepararDialogo(dialogo);
         dialogo.getDialogPane().setContent(contenido);
-        dialogo.getDialogPane().setStyle("-fx-background-color: #F3F6F9; "
-                + "-fx-border-color: #D7E0E8; -fx-border-width: 1px;");
-        dialogo.getDialogPane().setMinWidth(520);
-        dialogo.getDialogPane().setMinHeight(390);
-        dialogo.showAndWait().filter(r -> r.getButtonData().isDefaultButton()).ifPresent(r -> {
-            try {
-                BigDecimal efectivo = new BigDecimal(recibido.getText());
-                if (efectivo.compareTo(importe) < 0) {
-                    mostrarError("Pago insuficiente",
-                            "La cantidad recibida es menor al total a pagar.");
-                    return;
-                }
-                if (!servidorDisponible) {
-                    carrito.clear();
-                    actualizarTotal();
-                    mostrarPedidoCompletado(importe, efectivo);
-                    return;
-                }
-                String cuerpo = json.writeValueAsString(VentaRequest.desde(carrito, BigDecimal.ZERO));
-                request("POST", "/api/ventas", cuerpo).thenAccept(creada -> {
-                    if (creada.statusCode() != 201) {
-                        Platform.runLater(() -> mostrarOperacionFallida(creada));
-                        return;
-                    }
-                    try {
-                        int id = json.readTree(creada.body()).get("id").asInt();
-                        String pago = "[{\"forma\":\"EFECTIVO\",\"monto\":" + importe
-                                + ",\"recibido\":" + efectivo + "}]";
-                        request("POST", "/api/ventas/" + id + "/cobro", pago).thenAccept(cobrada ->
-                                Platform.runLater(() -> {
-                                    if (cobrada.statusCode() == 200) {
-                                        carrito.clear();
-                                        actualizarTotal();
-                                        mostrarPedidoCompletado(importe, efectivo);
-                                    } else {
-                                        mostrarOperacionFallida(cobrada);
-                                    }
-                                }));
-                    } catch (Exception ex) {
-                        Platform.runLater(() -> mostrarError(ex.getMessage()));
-                    }
-                });
-            } catch (NumberFormatException | com.fasterxml.jackson.core.JsonProcessingException ex) {
-                mostrarError(ex instanceof NumberFormatException
-                        ? "El efectivo recibido no es válido"
-                        : "No se pudo preparar la venta");
+        dialogo.getDialogPane().setPrefWidth(520);
+        ((Button) dialogo.getDialogPane().lookupButton(ButtonType.OK)).setText("Cobrar");
+        ((Button) dialogo.getDialogPane().lookupButton(ButtonType.CANCEL)).setText("Cancelar");
+        Platform.runLater(() -> {
+            recibido.requestFocus();
+            recibido.selectAll();
+        });
+
+        dialogo.showAndWait().filter(r -> r == ButtonType.OK).ifPresent(r -> {
+            BigDecimal efectivo = leerDinero(recibido.getText());
+            if (efectivo == null) {
+                mostrarError("Cantidad no válida", "El efectivo recibido no es un número válido.");
+                return;
             }
+            if (efectivo.compareTo(importe) < 0) {
+                mostrarError("Pago insuficiente",
+                        "La cantidad recibida es menor al total a pagar.");
+                return;
+            }
+            if (!servidorDisponible) {
+                carrito.clear();
+                actualizarTotal();
+                mostrarPedidoCompletado(importe, efectivo, null);
+                return;
+            }
+            String cuerpoVenta;
+            try {
+                cuerpoVenta = json.writeValueAsString(VentaRequest.desde(carrito, BigDecimal.ZERO));
+            } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
+                mostrarError("No se pudo preparar la venta");
+                return;
+            }
+            request("POST", "/api/ventas", cuerpoVenta).thenAccept(creada -> {
+                if (creada.statusCode() != 201) {
+                    Platform.runLater(() -> mostrarOperacionFallida(creada));
+                    return;
+                }
+                try {
+                    JsonNode venta = json.readTree(creada.body());
+                    int id = venta.get("id").asInt();
+                    String folio = venta.path("folio").asText(null);
+                    String pagoJson = "[{\"forma\":\"EFECTIVO\",\"monto\":" + importe
+                            + ",\"recibido\":" + efectivo + "}]";
+                    request("POST", "/api/ventas/" + id + "/cobro", pagoJson).thenAccept(cobrada ->
+                            Platform.runLater(() -> {
+                                if (cobrada.statusCode() == 200) {
+                                    carrito.clear();
+                                    actualizarTotal();
+                                    mostrarPedidoCompletado(importe, efectivo, folio);
+                                } else {
+                                    mostrarOperacionFallida(cobrada);
+                                }
+                            }));
+                } catch (Exception ex) {
+                    Platform.runLater(() -> mostrarError(ex.getMessage()));
+                }
+            }).exceptionally(ex -> {
+                Platform.runLater(() -> mostrarError("Sin conexión",
+                        "No se pudo registrar la venta. Verifique la conexión con el servidor."));
+                return null;
+            });
         });
     }
 
-    private void mostrarPedidoCompletado(BigDecimal importe, BigDecimal efectivo) {
-        BigDecimal cambio = efectivo.subtract(importe).setScale(2);
-        Label titulo = new Label("Pedido completado");
-        titulo.setStyle("-fx-font-size: 18px; -fx-font-weight: bold; -fx-text-fill: #21865B;");
-        Label detalle = new Label("Total pagado: $" + importe.setScale(2)
-                + "\nEfectivo recibido: $" + formatearDinero(efectivo)
-                + "\nCambio para el cliente: $" + formatearDinero(cambio));
-        detalle.setStyle("-fx-font-size: 14px; -fx-text-fill: #425466;");
-        VBox contenido = new VBox(12, titulo, detalle);
-        contenido.setPadding(new Insets(14));
+    private void mostrarPedidoCompletado(BigDecimal importe, BigDecimal efectivo, String folio) {
+        BigDecimal cambio = efectivo.subtract(importe);
+        Label cambioLabel = new Label("CAMBIO PARA EL CLIENTE");
+        cambioLabel.getStyleClass().add("etiqueta-seccion");
+        Label cambioMonto = new Label(dinero(cambio));
+        cambioMonto.getStyleClass().add("cambio-grande");
+
+        GridPane detalle = new GridPane();
+        detalle.setHgap(24);
+        detalle.setVgap(6);
+        detalle.getStyleClass().add("tarjeta");
+        int fila = 0;
+        if (folio != null && !folio.isBlank()) {
+            detalle.addRow(fila++, textoResumen("Folio"), textoResumen(folio));
+        }
+        detalle.addRow(fila++, textoResumen("Total pagado"), textoResumen(dinero(importe)));
+        detalle.addRow(fila, textoResumen("Efectivo recibido"), textoResumen(dinero(efectivo)));
+
+        VBox cuerpo = new VBox(10, cambioLabel, cambioMonto, detalle);
+        cuerpo.setPadding(new Insets(16, 18, 12, 18));
+        VBox contenido = new VBox(franja("Venta completada", "franja-exito"), cuerpo);
+
         Alert dialogo = new Alert(Alert.AlertType.INFORMATION);
-        dialogo.setTitle("Pedido completado");
-        dialogo.setHeaderText(null);
-        dialogo.setGraphic(null);
+        dialogo.setTitle("Venta completada");
         prepararDialogo(dialogo);
-        dialogo.setContentText(null);
         dialogo.getDialogPane().setContent(contenido);
-        dialogo.getDialogPane().setStyle("-fx-background-color: #F3F6F9;");
+        dialogo.getDialogPane().setPrefWidth(420);
         dialogo.showAndWait();
     }
 
@@ -336,7 +459,11 @@ public class CajaApp extends Application {
                     } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
                         mostrarError("No se pudo leer el inventario.");
                     }
-                }));
+                })).exceptionally(ex -> {
+                    Platform.runLater(() -> mostrarError("Sin conexión",
+                            "No se pudo consultar el inventario en el servidor."));
+                    return null;
+                });
     }
 
     private void mostrarInventarioTemporal() {
@@ -348,16 +475,20 @@ public class CajaApp extends Application {
 
     private void mostrarInventario(JsonNode productos) {
         TableView<InventarioFila> tablaInventario = new TableView<>();
-        TableColumn<InventarioFila, String> nombre = new TableColumn<>("Producto");
+        TableColumn<InventarioFila, String> nombre = new TableColumn<>("PRODUCTO");
         nombre.setCellValueFactory(new PropertyValueFactory<>("nombre"));
-        TableColumn<InventarioFila, String> codigo = new TableColumn<>("Código");
+        nombre.setPrefWidth(260);
+        TableColumn<InventarioFila, String> codigo = new TableColumn<>("CÓDIGO");
         codigo.setCellValueFactory(new PropertyValueFactory<>("codigo"));
-        TableColumn<InventarioFila, BigDecimal> precio = new TableColumn<>("Precio");
+        codigo.setPrefWidth(140);
+        TableColumn<InventarioFila, BigDecimal> precio = new TableColumn<>("PRECIO");
         precio.setCellValueFactory(new PropertyValueFactory<>("precio"));
         precio.setCellFactory(columna -> celdaInventarioMonetaria());
-        TableColumn<InventarioFila, BigDecimal> existencia = new TableColumn<>("Existencia");
+        precio.getStyleClass().add("col-dinero");
+        TableColumn<InventarioFila, BigDecimal> existencia = new TableColumn<>("EXISTENCIA");
         existencia.setCellValueFactory(new PropertyValueFactory<>("existencia"));
         existencia.setCellFactory(columna -> celdaInventarioNumero());
+        existencia.getStyleClass().add("col-centro");
         tablaInventario.getColumns().addAll(nombre, codigo, precio, existencia);
         tablaInventario.getSelectionModel().setSelectionMode(SelectionMode.SINGLE);
         tablaInventario.getSelectionModel().setCellSelectionEnabled(true);
@@ -368,34 +499,32 @@ public class CajaApp extends Application {
             }
         });
         tablaInventario.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
-        tablaInventario.setPlaceholder(new Label("No hay productos registrados"));
-        tablaInventario.setStyle("-fx-background-color: white; -fx-border-color: #D7E0E8;");
+        tablaInventario.setPlaceholder(placeholder("No hay productos registrados", ""));
+        tablaInventario.setPrefHeight(340);
 
         for (JsonNode producto : productos) {
             tablaInventario.getItems().add(new InventarioFila(
                     producto.path("nombre").asText(),
-                    producto.path("codigoBarras").isNull() ? "—" : producto.path("codigoBarras").asText(),
+                    producto.path("codigoBarras").isNull() || producto.path("codigoBarras").isMissingNode()
+                            ? "—" : producto.path("codigoBarras").asText(),
                     producto.path("precio").decimalValue(),
                     producto.path("stockActual").decimalValue()));
         }
 
-        Label encabezado = new Label("INVENTARIO DISPONIBLE");
-        encabezado.setStyle("-fx-background-color: #17324D; -fx-text-fill: white; "
-                + "-fx-font-size: 13px; -fx-font-weight: bold; -fx-padding: 12px 14px;");
-        VBox contenido = new VBox(12, encabezado, tablaInventario);
-        contenido.setPadding(new Insets(16));
-        contenido.setStyle("-fx-background-color: #F3F6F9;");
+        Label ayuda = new Label("Seleccione una celda y presione Ctrl+C para copiarla");
+        ayuda.getStyleClass().add("texto-suave");
+        VBox cuerpo = new VBox(10, tablaInventario, ayuda);
+        cuerpo.setPadding(new Insets(16, 18, 12, 18));
         VBox.setVgrow(tablaInventario, Priority.ALWAYS);
+        VBox contenido = new VBox(franja("Inventario disponible", null), cuerpo);
+        VBox.setVgrow(cuerpo, Priority.ALWAYS);
 
         Alert dialogo = new Alert(Alert.AlertType.INFORMATION);
         dialogo.setTitle("Inventario");
-        dialogo.setHeaderText(null);
-        dialogo.setGraphic(null);
         prepararDialogo(dialogo);
         dialogo.getDialogPane().setContent(contenido);
-        dialogo.getDialogPane().setStyle("-fx-background-color: #F3F6F9;");
-        dialogo.getDialogPane().setMinWidth(650);
-        dialogo.getDialogPane().setMinHeight(450);
+        dialogo.getDialogPane().setPrefWidth(700);
+        ((Button) dialogo.getDialogPane().lookupButton(ButtonType.OK)).setText("Cerrar");
         dialogo.showAndWait();
     }
 
@@ -412,15 +541,33 @@ public class CajaApp extends Application {
     }
 
     private void actualizarTotal() {
-        total.setText("$" + formatearDinero(total()));
+        total.setText(dinero(total()));
         BigDecimal unidades = carrito.stream().map(Renglon::getCantidad)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
-        resumenCarrito.setText(unidades.stripTrailingZeros().toPlainString()
-                + (unidades.compareTo(BigDecimal.ONE) == 0 ? " producto" : " productos"));
+        contadorRenglones.setText(String.valueOf(carrito.size()));
+        resumenCarrito.setText(carrito.isEmpty()
+                ? "Sin productos"
+                : unidades.stripTrailingZeros().toPlainString()
+                        + (unidades.compareTo(BigDecimal.ONE) == 0 ? " unidad" : " unidades")
+                        + "  ·  " + carrito.size()
+                        + (carrito.size() == 1 ? " renglón" : " renglones"));
     }
 
-    private static String formatearDinero(BigDecimal valor) {
-        return valor.stripTrailingZeros().toPlainString();
+    /** Formato para mostrar en pantalla: $1,234.50 */
+    private static String dinero(BigDecimal valor) {
+        return "$" + MONEDA.format(valor.setScale(2, RoundingMode.HALF_UP));
+    }
+
+    /** Acepta "500", "500.00", "$500" o "1,500.00". Devuelve null si no es un número. */
+    private static BigDecimal leerDinero(String texto) {
+        if (texto == null) return null;
+        String limpio = texto.replace("$", "").replace(",", "").trim();
+        if (limpio.isEmpty()) return null;
+        try {
+            return new BigDecimal(limpio);
+        } catch (NumberFormatException ex) {
+            return null;
+        }
     }
 
     private static TableCell<Renglon, BigDecimal> celdaMonetaria() {
@@ -428,7 +575,7 @@ public class CajaApp extends Application {
             @Override
             protected void updateItem(BigDecimal valor, boolean vacia) {
                 super.updateItem(valor, vacia);
-                setText(vacia || valor == null ? null : formatearDinero(valor));
+                setText(vacia || valor == null ? null : dinero(valor));
             }
         };
     }
@@ -438,7 +585,7 @@ public class CajaApp extends Application {
             @Override
             protected void updateItem(BigDecimal valor, boolean vacia) {
                 super.updateItem(valor, vacia);
-                setText(vacia || valor == null ? null : formatearDinero(valor));
+                setText(vacia || valor == null ? null : dinero(valor));
             }
         };
     }
@@ -457,13 +604,12 @@ public class CajaApp extends Application {
         if (tablaInventario.getSelectionModel().getSelectedCells().isEmpty()) {
             return;
         }
-        javafx.scene.control.TablePosition<?, ?> posicion =
-                tablaInventario.getSelectionModel().getSelectedCells().get(0);
+        TablePosition<?, ?> posicion = tablaInventario.getSelectionModel().getSelectedCells().get(0);
         InventarioFila fila = tablaInventario.getItems().get(posicion.getRow());
         String valor = switch (posicion.getColumn()) {
             case 0 -> fila.getNombre();
             case 1 -> fila.getCodigo();
-            case 2 -> formatearDinero(fila.getPrecio());
+            case 2 -> fila.getPrecio().setScale(2, RoundingMode.HALF_UP).toPlainString();
             case 3 -> fila.getExistencia().stripTrailingZeros().toPlainString();
             default -> "";
         };
@@ -473,26 +619,26 @@ public class CajaApp extends Application {
     }
 
     private void verificarServidor() {
-        request("GET", "/api/salud", null).thenAccept(r -> Platform.runLater(() ->
-                {
-                    servidorDisponible = r.statusCode() == 200;
-                    estadoServidor.setText(servidorDisponible
-                            ? "Servidor: conectado"
-                            : "Modo local · datos de prueba");
-                    estadoServidor.setStyle(servidorDisponible
-                            ? "-fx-background-color: #21865B; -fx-background-radius: 14px; "
-                                    + "-fx-padding: 7px 12px; -fx-text-fill: white; -fx-font-size: 12px;"
-                            : "-fx-background-color: #A66A18; -fx-background-radius: 14px; "
-                                    + "-fx-padding: 7px 12px; -fx-text-fill: white; -fx-font-size: 12px;");
-                })).exceptionally(ex -> {
-                    Platform.runLater(() -> {
-                        servidorDisponible = false;
-                        estadoServidor.setText("Modo local · datos de prueba");
-                        estadoServidor.setStyle("-fx-background-color: #A66A18; -fx-background-radius: 14px; "
-                                + "-fx-padding: 7px 12px; -fx-text-fill: white; -fx-font-size: 12px;");
-                    });
-                    return null;
-                });
+        request("GET", "/api/salud", null).thenAccept(r -> Platform.runLater(() -> {
+            servidorDisponible = r.statusCode() == 200;
+            ponerEstado(servidorDisponible ? "●  Servidor conectado" : "●  Modo local · datos de prueba",
+                    servidorDisponible ? "estado-ok" : "estado-local");
+        })).exceptionally(ex -> {
+            Platform.runLater(() -> {
+                servidorDisponible = false;
+                ponerEstado("●  Modo local · datos de prueba", "estado-local");
+            });
+            return null;
+        });
+    }
+
+    private void ponerEstado(String texto, String clase) {
+        estadoServidor.setText(texto);
+        estadoServidor.getStyleClass().removeAll("estado-ok", "estado-local", "estado-error");
+        estadoServidor.getStyleClass().add(clase);
+        estadoServidor.setTooltip(new Tooltip(servidorDisponible
+                ? "Conectado a " + SERVIDOR
+                : "No se pudo conectar a " + SERVIDOR + ". Las ventas no se registran."));
     }
 
     private java.util.concurrent.CompletableFuture<HttpResponse<String>> request(
@@ -514,11 +660,19 @@ public class CajaApp extends Application {
     }
 
     private void mostrarError(String titulo, String mensaje) {
-        Alert dialogo = new Alert(Alert.AlertType.ERROR, mensaje);
+        Label texto = new Label(mensaje);
+        texto.getStyleClass().add("mensaje-dialogo");
+        texto.setMaxWidth(380);
+        VBox cuerpo = new VBox(texto);
+        cuerpo.setPadding(new Insets(18));
+        VBox contenido = new VBox(franja(titulo, "franja-error"), cuerpo);
+
+        Alert dialogo = new Alert(Alert.AlertType.ERROR);
         dialogo.setTitle(titulo);
-        dialogo.setHeaderText(null);
-        dialogo.setGraphic(null);
         prepararDialogo(dialogo);
+        dialogo.getDialogPane().setContent(contenido);
+        dialogo.getDialogPane().setPrefWidth(420);
+        ((Button) dialogo.getDialogPane().lookupButton(ButtonType.OK)).setText("Entendido");
         dialogo.showAndWait();
     }
 
@@ -549,15 +703,12 @@ public class CajaApp extends Application {
         return "No se pudo completar la operación (HTTP " + respuesta.statusCode() + ").";
     }
 
-    private void mostrarInfo(String mensaje) {
-        Alert dialogo = new Alert(Alert.AlertType.INFORMATION, mensaje);
-        dialogo.setGraphic(null);
-        prepararDialogo(dialogo);
-        dialogo.showAndWait();
-    }
-
+    /** Aplica la hoja de estilos, quita el encabezado por defecto y centra el diálogo. */
     private void prepararDialogo(Alert dialogo) {
         dialogo.initOwner(ventanaPrincipal);
+        dialogo.setHeaderText(null);
+        dialogo.setGraphic(null);
+        dialogo.getDialogPane().getStylesheets().add(ESTILO);
         dialogo.setOnShown(evento -> {
             Window ventanaDialogo = dialogo.getDialogPane().getScene().getWindow();
             ventanaDialogo.setX(ventanaPrincipal.getX()
@@ -567,10 +718,60 @@ public class CajaApp extends Application {
         });
     }
 
-    private static HBox espacio() {
-        HBox h = new HBox();
-        HBox.setHgrow(h, Priority.ALWAYS);
-        return h;
+    // ---------- Pequeñas piezas de interfaz ----------
+
+    private static Label franja(String texto, String claseExtra) {
+        Label franja = new Label(texto);
+        franja.getStyleClass().add("franja-dialogo");
+        if (claseExtra != null) franja.getStyleClass().add(claseExtra);
+        franja.setMaxWidth(Double.MAX_VALUE);
+        return franja;
+    }
+
+    private static Label etiquetaSeccion(String texto) {
+        Label etiqueta = new Label(texto);
+        etiqueta.getStyleClass().add("etiqueta-seccion");
+        return etiqueta;
+    }
+
+    private static Label textoResumen(String texto) {
+        Label etiqueta = new Label(texto);
+        etiqueta.getStyleClass().add("renglon-resumen");
+        return etiqueta;
+    }
+
+    private static Node placeholder(String titulo, String detalle) {
+        Label principal = new Label(titulo);
+        principal.getStyleClass().add("placeholder-titulo");
+        Label secundario = new Label(detalle);
+        secundario.getStyleClass().add("placeholder-texto");
+        VBox caja = new VBox(4, principal, secundario);
+        caja.setAlignment(Pos.CENTER);
+        return caja;
+    }
+
+    private static Label tecla(String texto) {
+        Label tecla = new Label(texto);
+        tecla.getStyleClass().add("tecla");
+        return tecla;
+    }
+
+    private static Label descripcionTecla(String texto) {
+        Label descripcion = new Label(texto);
+        descripcion.getStyleClass().add("tecla-descripcion");
+        return descripcion;
+    }
+
+    private static Region separador() {
+        Region linea = new Region();
+        linea.getStyleClass().add("separador");
+        return linea;
+    }
+
+    private static Region espacio() {
+        Region region = new Region();
+        HBox.setHgrow(region, Priority.ALWAYS);
+        return region;
     }
 
     public static void main(String[] args) {
